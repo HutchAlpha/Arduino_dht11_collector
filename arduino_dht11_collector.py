@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Station météo DHT11 : graphique temps réel, moyenne, records et alertes sonores."""
+"""Station météo DHT11 : affichage série, statistiques, records et graphique en direct."""
 
 import csv
 import math
@@ -14,10 +14,10 @@ import serial
 import serial.tools.list_ports
 import tkinter as tk
 from tkinter import messagebox, ttk
-
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 import matplotlib.dates as mdates
+from matplotlib.legend import Legend
 
 try:
     import winsound
@@ -29,6 +29,7 @@ class WeatherStation:
     BAUDRATE = 9600
     MAX_POINTS = 500
     UPDATE_MS = 500
+    EPSILON = 0.0001
 
     def __init__(self):
         self.root = tk.Tk()
@@ -39,8 +40,11 @@ class WeatherStation:
         self.serial_port = None
         self.running = False
         self.data = []
-        self.last_temp_record = None
-        self.last_hum_record = None
+        self.sound_enabled = True
+        self.markers_visible = True
+        self.legend_visible = False
+        self.legend_left = None
+        self.legend_right = None
         self.last_sound_time = 0.0
         self.csv_path = Path(__file__).with_name("mesures_dht11.csv")
 
@@ -75,7 +79,14 @@ class WeatherStation:
         self.port_combo = ttk.Combobox(connection, textvariable=self.port_var, width=18, state="readonly")
         self.port_combo.pack(side=tk.LEFT, padx=8)
         ttk.Button(connection, text="Rafraîchir", command=self.refresh_ports).pack(side=tk.LEFT)
-        ttk.Button(connection, text="Exporter CSV", command=self.export_csv).pack(side=tk.RIGHT)
+
+        self.legend_button = ttk.Button(connection, text="Afficher légende", command=self.toggle_legend)
+        self.legend_button.pack(side=tk.RIGHT)
+        self.markers_button = ttk.Button(connection, text="Masquer points records", command=self.toggle_markers)
+        self.markers_button.pack(side=tk.RIGHT, padx=(8, 0))
+        self.sound_button = ttk.Button(connection, text="🔊 Bruitage : activé", command=self.toggle_sound)
+        self.sound_button.pack(side=tk.RIGHT, padx=(8, 0))
+        ttk.Button(connection, text="Exporter CSV", command=self.export_csv).pack(side=tk.RIGHT, padx=(0, 8))
 
         cards = ttk.Frame(self.root, padding=(18, 8, 18, 8))
         cards.pack(fill=tk.X)
@@ -91,7 +102,7 @@ class WeatherStation:
         self.temp_min_label = self.create_stat(stats, "Min température", 0)
         self.temp_max_label = self.create_stat(stats, "Max température", 1)
         self.hum_avg_label = self.create_stat(stats, "Moyenne humidité", 2)
-        self.record_label = self.create_stat(stats, "Dernier record", 3)
+        self.record_label = self.create_stat(stats, "Dernier événement", 3)
         for i in range(4):
             stats.columnconfigure(i, weight=1)
 
@@ -103,12 +114,16 @@ class WeatherStation:
         self.ax_hum = self.figure.add_subplot(2, 1, 2, sharex=self.ax_temp)
         self.figure.subplots_adjust(left=0.08, right=0.98, top=0.93, bottom=0.12, hspace=0.45)
 
-        self.temp_line, = self.ax_temp.plot([], [], color="#D94841", linewidth=2.4, marker="o", markersize=3, label="Température")
-        self.avg_line, = self.ax_temp.plot([], [], color="#7656A6", linewidth=2, linestyle="--", label="Moyenne progressive")
+        self.temp_line, = self.ax_temp.plot([], [], color="#D94841", linewidth=2.4, marker="o", markersize=3)
+        self.avg_line, = self.ax_temp.plot([], [], color="#7656A6", linewidth=2, linestyle="--")
+        self.max_point = self.ax_temp.scatter([], [], s=55, marker="o", color="#E31B23", edgecolors="#7A1014", linewidths=0.7, zorder=5)
+        self.min_point = self.ax_temp.scatter([], [], s=55, marker="o", color="#1A73E8", edgecolors="#0B3D91", linewidths=0.7, zorder=5)
+        self.old_max_points = self.ax_temp.scatter([], [], s=28, marker="o", color="#F5AAAA", edgecolors="none", alpha=0.95, zorder=4)
+        self.old_min_points = self.ax_temp.scatter([], [], s=28, marker="o", color="#A8C8F4", edgecolors="none", alpha=0.95, zorder=4)
         self.hum_line, = self.ax_hum.plot([], [], color="#2878B5", linewidth=2.4, marker="o", markersize=3, label="Humidité")
 
         self.ax_temp.set_ylabel("Température (°C)")
-        self.ax_temp.set_title("Température et moyenne progressive", loc="left", fontweight="bold")
+        self.ax_temp.set_title("Température, moyenne et records", loc="left", fontweight="bold")
         self.ax_hum.set_ylabel("Humidité (%)")
         self.ax_hum.set_xlabel("Heure")
         self.ax_hum.set_title("Humidité", loc="left", fontweight="bold")
@@ -117,7 +132,6 @@ class WeatherStation:
             ax.grid(True, alpha=0.22)
             ax.spines["top"].set_visible(False)
             ax.spines["right"].set_visible(False)
-        self.ax_temp.legend(loc="upper left", frameon=False)
         self.ax_hum.legend(loc="upper left", frameon=False)
         self.ax_hum.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M:%S"))
 
@@ -150,14 +164,85 @@ class WeatherStation:
         return label
 
     def log(self, text):
-        if not self.log_text.winfo_exists():
-            return
-        stamp = datetime.now().strftime("%H:%M:%S")
-        self.log_text.insert(tk.END, f"[{stamp}] {text}\n")
-        self.log_text.see(tk.END)
+        if self.log_text.winfo_exists():
+            stamp = datetime.now().strftime("%H:%M:%S")
+            self.log_text.insert(tk.END, f"[{stamp}] {text}\n")
+            self.log_text.see(tk.END)
 
     def set_status(self, text, color="#536273"):
         self.status_label.configure(text=text, foreground=color)
+
+    def toggle_sound(self):
+        self.sound_enabled = not self.sound_enabled
+        state = "activé" if self.sound_enabled else "désactivé"
+        icon = "🔊" if self.sound_enabled else "🔇"
+        self.sound_button.configure(text=f"{icon} Bruitage : {state}")
+        self.log(f"Bruitage {state}.")
+
+    def toggle_markers(self):
+        self.markers_visible = not self.markers_visible
+        for points in (self.max_point, self.min_point, self.old_max_points, self.old_min_points):
+            points.set_visible(self.markers_visible)
+        self.markers_button.configure(text="Masquer points records" if self.markers_visible else "Afficher points records")
+        self.canvas.draw_idle()
+
+    def remove_temp_legends(self):
+        # La première légende est dans ax_temp.artists, la deuxième est ax_temp.legend_.
+        # Les deux sont retirées explicitement afin qu'aucun doublon ne reste affiché.
+        for legend in (self.legend_left, self.legend_right):
+            if legend is not None:
+                try:
+                    legend.remove()
+                except (ValueError, AttributeError):
+                    pass
+        self.legend_left = None
+        self.legend_right = None
+
+        for artist in list(self.ax_temp.artists):
+            if isinstance(artist, Legend):
+                artist.remove()
+        if self.ax_temp.get_legend() is not None:
+            self.ax_temp.get_legend().remove()
+
+    def toggle_legend(self):
+        self.legend_visible = not self.legend_visible
+        self.remove_temp_legends()
+
+        if self.legend_visible:
+            # Deux légendes séparées : ordre exact demandé, sans réorganisation automatique de Matplotlib.
+            # Colonne gauche : Température / Records Min / Ancien Min
+            self.legend_left = self.ax_temp.legend(
+                handles=[self.temp_line, self.min_point, self.old_min_points],
+                labels=["Température", "Records Min", "Ancien Min"],
+                loc="upper left",
+                bbox_to_anchor=(0.00, 1.02),
+                frameon=False,
+                handlelength=2.0,
+                handletextpad=0.6,
+                borderaxespad=0,
+                labelspacing=0.55,
+                fontsize=8,
+            )
+            self.ax_temp.add_artist(self.legend_left)
+
+            # Colonne droite : Moyenne / Records Max / Ancien Max
+            self.legend_right = self.ax_temp.legend(
+                handles=[self.avg_line, self.max_point, self.old_max_points],
+                labels=["Moyenne", "Records Max", "Ancien Max"],
+                loc="upper left",
+                bbox_to_anchor=(0.42, 1.02),
+                frameon=False,
+                handlelength=2.0,
+                handletextpad=0.6,
+                borderaxespad=0,
+                labelspacing=0.55,
+                fontsize=8,
+            )
+            self.legend_button.configure(text="Masquer légende")
+        else:
+            self.legend_button.configure(text="Afficher légende")
+
+        self.canvas.draw_idle()
 
     def refresh_ports(self):
         ports = list(serial.tools.list_ports.comports())
@@ -199,60 +284,83 @@ class WeatherStation:
                     self.root.after(0, self.log, line)
                 if not line.startswith("DATA:"):
                     continue
-                payload = line[5:]
-                parts = payload.split(",", 1)
+                parts = line[5:].split(",", 1)
                 if len(parts) != 2:
                     continue
                 temp = float(parts[0].strip())
                 hum = float(parts[1].strip())
-                if not (math.isfinite(temp) and math.isfinite(hum)):
-                    continue
-                self.root.after(0, self.add_measurement, temp, hum)
+                if math.isfinite(temp) and math.isfinite(hum):
+                    self.root.after(0, self.add_measurement, temp, hum)
             except (ValueError, serial.SerialException) as exc:
                 self.root.after(0, self.log, f"Lecture série : {exc}")
                 time.sleep(0.5)
 
     def add_measurement(self, temp, hum):
         now = datetime.now()
-        self.data.append({"timestamp": now, "temperature": temp, "humidite": hum})
-        self.data = self.data[-self.MAX_POINTS:]
+        previous_max = max((item["temperature"] for item in self.data), default=None)
+        previous_min = min((item["temperature"] for item in self.data), default=None)
 
+        if previous_max is None:
+            event = "initial"
+        elif temp > previous_max + self.EPSILON:
+            event = "new_max"
+        elif temp < previous_min - self.EPSILON:
+            event = "new_min"
+        elif math.isclose(temp, previous_max, abs_tol=self.EPSILON):
+            event = "equal_max"
+        elif math.isclose(temp, previous_min, abs_tol=self.EPSILON):
+            event = "equal_min"
+        else:
+            event = None
+
+        self.data.append({"timestamp": now, "temperature": temp, "humidite": hum, "event": event})
+        self.data = self.data[-self.MAX_POINTS:]
         temps = [item["temperature"] for item in self.data]
         hums = [item["humidite"] for item in self.data]
-        average = statistics.fmean(temps)
 
         self.temp_label.configure(text=f"{temp:.1f} °C")
         self.hum_label.configure(text=f"{hum:.1f} %")
-        self.avg_label.configure(text=f"{average:.1f} °C")
+        self.avg_label.configure(text=f"{statistics.fmean(temps):.1f} °C")
         self.count_label.configure(text=str(len(self.data)))
         self.temp_min_label.configure(text=f"{min(temps):.1f} °C")
         self.temp_max_label.configure(text=f"{max(temps):.1f} °C")
         self.hum_avg_label.configure(text=f"{statistics.fmean(hums):.1f} %")
 
-        record = None
-        if temp == max(temps) and (self.last_temp_record is None or temp > self.last_temp_record):
-            self.last_temp_record = temp
-            record = f"Nouveau maximum : {temp:.1f} °C"
-            self.play_sound("max")
-        elif temp == min(temps) and (self.last_temp_record is None or temp < self.last_temp_record):
-            self.last_temp_record = temp
-            record = f"Nouveau minimum : {temp:.1f} °C"
-            self.play_sound("min")
-        if record:
-            self.record_label.configure(text=record)
-            self.log(record)
+        messages = {
+            "new_max": (f"Nouveau maximum : {temp:.1f} °C", "max"),
+            "new_min": (f"Nouveau minimum : {temp:.1f} °C", "min"),
+            "equal_max": (f"Maximum égalé : {temp:.1f} °C", None),
+            "equal_min": (f"Minimum égalé : {temp:.1f} °C", None),
+        }
+        if event in messages:
+            text, sound = messages[event]
+            self.record_label.configure(text=text)
+            self.log(text)
+            if sound:
+                self.play_sound(sound)
 
     def play_sound(self, kind):
+        if not self.sound_enabled or winsound is None:
+            return
         now = time.monotonic()
         if now - self.last_sound_time < 0.8:
             return
         self.last_sound_time = now
-        if winsound is None:
-            return
         if kind == "max":
             winsound.Beep(1100, 180)
-        else:
+        elif kind == "min":
             winsound.Beep(500, 280)
+
+    @staticmethod
+    def empty_offsets():
+        return [[float("nan"), float("nan")]]
+
+    @staticmethod
+    def point_offsets(points):
+        return [[mdates.date2num(timestamp), value] for timestamp, value in points]
+
+    def set_scatter_points(self, collection, points):
+        collection.set_offsets(self.point_offsets(points) if points else self.empty_offsets())
 
     def update_graph(self):
         if self.data:
@@ -261,14 +369,23 @@ class WeatherStation:
             hums = [item["humidite"] for item in self.data]
             averages = [statistics.fmean(temps[:index + 1]) for index in range(len(temps))]
 
+            max_events = [(item["timestamp"], item["temperature"]) for item in self.data if item["event"] in ("new_max", "equal_max")]
+            min_events = [(item["timestamp"], item["temperature"]) for item in self.data if item["event"] in ("new_min", "equal_min")]
+
             self.temp_line.set_data(timestamps, temps)
             self.avg_line.set_data(timestamps, averages)
             self.hum_line.set_data(timestamps, hums)
+            self.set_scatter_points(self.max_point, max_events[-1:])
+            self.set_scatter_points(self.min_point, min_events[-1:])
+            self.set_scatter_points(self.old_max_points, max_events[:-1])
+            self.set_scatter_points(self.old_min_points, min_events[:-1])
+
             self.ax_temp.relim()
             self.ax_temp.autoscale_view()
             self.ax_hum.relim()
             self.ax_hum.autoscale_view()
             self.canvas.draw_idle()
+
         if self.root.winfo_exists():
             self.root.after(self.UPDATE_MS, self.update_graph)
 
@@ -278,11 +395,18 @@ class WeatherStation:
             return
         with self.csv_path.open("w", newline="", encoding="utf-8-sig") as file:
             writer = csv.writer(file, delimiter=";")
-            writer.writerow(["Date", "Heure", "Temperature_C", "Humidite_pourcent", "Moyenne_temperature_C"])
+            writer.writerow(["Date", "Heure", "Temperature_C", "Humidite_pourcent", "Moyenne_temperature_C", "Evenement"])
             temps = []
             for item in self.data:
                 temps.append(item["temperature"])
-                writer.writerow([item["timestamp"].strftime("%Y-%m-%d"), item["timestamp"].strftime("%H:%M:%S"), f"{item['temperature']:.2f}", f"{item['humidite']:.2f}", f"{statistics.fmean(temps):.2f}"])
+                writer.writerow([
+                    item["timestamp"].strftime("%Y-%m-%d"),
+                    item["timestamp"].strftime("%H:%M:%S"),
+                    f"{item['temperature']:.2f}",
+                    f"{item['humidite']:.2f}",
+                    f"{statistics.fmean(temps):.2f}",
+                    item["event"] or "",
+                ])
         self.log(f"CSV exporté : {self.csv_path.name}")
         messagebox.showinfo("Export CSV", f"Export terminé :\n{self.csv_path}")
 
