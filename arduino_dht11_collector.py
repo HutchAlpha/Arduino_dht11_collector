@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """Station météo DHT11 : affichage série, statistiques, records et graphique en direct."""
 
@@ -27,7 +26,6 @@ except ImportError:
 
 class WeatherStation:
     BAUDRATE = 9600
-    MAX_POINTS = 500
     UPDATE_MS = 500
     EPSILON = 0.0001
 
@@ -116,11 +114,41 @@ class WeatherStation:
 
         self.temp_line, = self.ax_temp.plot([], [], color="#D94841", linewidth=2.4, marker="o", markersize=3)
         self.avg_line, = self.ax_temp.plot([], [], color="#7656A6", linewidth=2, linestyle="--")
-        self.max_point = self.ax_temp.scatter([], [], s=55, marker="o", color="#E31B23", edgecolors="#7A1014", linewidths=0.7, zorder=5)
-        self.min_point = self.ax_temp.scatter([], [], s=55, marker="o", color="#1A73E8", edgecolors="#0B3D91", linewidths=0.7, zorder=5)
-        self.old_max_points = self.ax_temp.scatter([], [], s=28, marker="o", color="#F5AAAA", edgecolors="none", alpha=0.95, zorder=4)
-        self.old_min_points = self.ax_temp.scatter([], [], s=28, marker="o", color="#A8C8F4", edgecolors="none", alpha=0.95, zorder=4)
-        self.hum_line, = self.ax_hum.plot([], [], color="#2878B5", linewidth=2.4, marker="o", markersize=3, label="Humidité")
+
+        # Records "nouveaux" (ronds)
+        self.max_point = self.ax_temp.scatter(
+            [], [], s=55, marker="o", color="#E31B23",
+            edgecolors="#7A1014", linewidths=0.7, zorder=5
+        )
+        self.min_point = self.ax_temp.scatter(
+            [], [], s=55, marker="o", color="#1A73E8",
+            edgecolors="#0B3D91", linewidths=0.7, zorder=5
+        )
+
+        # Anciens records (ronds plus petits)
+        self.old_max_points = self.ax_temp.scatter(
+            [], [], s=28, marker="o", color="#F5AAAA",
+            edgecolors="none", alpha=0.95, zorder=4
+        )
+        self.old_min_points = self.ax_temp.scatter(
+            [], [], s=28, marker="o", color="#A8C8F4",
+            edgecolors="none", alpha=0.95, zorder=4
+        )
+
+        # Records égalés (symbole =)
+        self.equal_max_point = self.ax_temp.scatter(
+            [], [], s=90, marker="$=$", color="#C0392B",
+            edgecolors="none", zorder=6
+        )
+        self.equal_min_point = self.ax_temp.scatter(
+            [], [], s=90, marker="$=$", color="#2980B9",
+            edgecolors="none", zorder=6
+        )
+
+        self.hum_line, = self.ax_hum.plot(
+            [], [], color="#2878B5", linewidth=2.4,
+            marker="o", markersize=3, label="Humidité"
+        )
 
         self.ax_temp.set_ylabel("Température (°C)")
         self.ax_temp.set_title("Température, moyenne et records", loc="left", fontweight="bold")
@@ -140,7 +168,10 @@ class WeatherStation:
 
         log_frame = ttk.LabelFrame(self.root, text="Journal série", style="Card.TLabelframe", padding=6)
         log_frame.pack(fill=tk.X, padx=18, pady=(0, 12))
-        self.log_text = tk.Text(log_frame, height=5, font=("Consolas", 9), bg="#17212B", fg="#E8F1F8", insertbackground="white", relief="flat")
+        self.log_text = tk.Text(
+            log_frame, height=5, font=("Consolas", 9),
+            bg="#17212B", fg="#E8F1F8", insertbackground="white", relief="flat"
+        )
         self.log_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scrollbar = ttk.Scrollbar(log_frame, orient="vertical", command=self.log_text.yview)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
@@ -181,14 +212,18 @@ class WeatherStation:
 
     def toggle_markers(self):
         self.markers_visible = not self.markers_visible
-        for points in (self.max_point, self.min_point, self.old_max_points, self.old_min_points):
+        for points in (
+            self.max_point, self.min_point,
+            self.old_max_points, self.old_min_points,
+            self.equal_max_point, self.equal_min_point,
+        ):
             points.set_visible(self.markers_visible)
-        self.markers_button.configure(text="Masquer points records" if self.markers_visible else "Afficher points records")
+        self.markers_button.configure(
+            text="Masquer points records" if self.markers_visible else "Afficher points records"
+        )
         self.canvas.draw_idle()
 
     def remove_temp_legends(self):
-        # La première légende est dans ax_temp.artists, la deuxième est ax_temp.legend_.
-        # Les deux sont retirées explicitement afin qu'aucun doublon ne reste affiché.
         for legend in (self.legend_left, self.legend_right):
             if legend is not None:
                 try:
@@ -209,34 +244,20 @@ class WeatherStation:
         self.remove_temp_legends()
 
         if self.legend_visible:
-            # Deux légendes séparées : ordre exact demandé, sans réorganisation automatique de Matplotlib.
-            # Colonne gauche : Température / Records Min / Ancien Min
             self.legend_left = self.ax_temp.legend(
                 handles=[self.temp_line, self.min_point, self.old_min_points],
                 labels=["Température", "Records Min", "Ancien Min"],
-                loc="upper left",
-                bbox_to_anchor=(0.00, 1.02),
-                frameon=False,
-                handlelength=2.0,
-                handletextpad=0.6,
-                borderaxespad=0,
-                labelspacing=0.55,
-                fontsize=8,
+                loc="upper left", bbox_to_anchor=(0.00, 1.02), frameon=False,
+                handlelength=2.0, handletextpad=0.6, borderaxespad=0,
+                labelspacing=0.55, fontsize=8,
             )
             self.ax_temp.add_artist(self.legend_left)
-
-            # Colonne droite : Moyenne / Records Max / Ancien Max
             self.legend_right = self.ax_temp.legend(
                 handles=[self.avg_line, self.max_point, self.old_max_points],
                 labels=["Moyenne", "Records Max", "Ancien Max"],
-                loc="upper left",
-                bbox_to_anchor=(0.42, 1.02),
-                frameon=False,
-                handlelength=2.0,
-                handletextpad=0.6,
-                borderaxespad=0,
-                labelspacing=0.55,
-                fontsize=8,
+                loc="upper left", bbox_to_anchor=(0.42, 1.02), frameon=False,
+                handlelength=2.0, handletextpad=0.6, borderaxespad=0,
+                labelspacing=0.55, fontsize=8,
             )
             self.legend_button.configure(text="Masquer légende")
         else:
@@ -296,7 +317,6 @@ class WeatherStation:
                 time.sleep(0.5)
 
     def add_measurement(self, temp, hum):
-        now = datetime.now()
         previous_max = max((item["temperature"] for item in self.data), default=None)
         previous_min = min((item["temperature"] for item in self.data), default=None)
 
@@ -313,11 +333,16 @@ class WeatherStation:
         else:
             event = None
 
-        self.data.append({"timestamp": now, "temperature": temp, "humidite": hum, "event": event})
-        self.data = self.data[-self.MAX_POINTS:]
+        self.data.append({
+            "timestamp": datetime.now(),
+            "temperature": temp,
+            "humidite": hum,
+            "event": event,
+        })
+        # PLUS DE LIMITE MAX_POINTS
+
         temps = [item["temperature"] for item in self.data]
         hums = [item["humidite"] for item in self.data]
-
         self.temp_label.configure(text=f"{temp:.1f} °C")
         self.hum_label.configure(text=f"{hum:.1f} %")
         self.avg_label.configure(text=f"{statistics.fmean(temps):.1f} °C")
@@ -369,16 +394,39 @@ class WeatherStation:
             hums = [item["humidite"] for item in self.data]
             averages = [statistics.fmean(temps[:index + 1]) for index in range(len(temps))]
 
-            max_events = [(item["timestamp"], item["temperature"]) for item in self.data if item["event"] in ("new_max", "equal_max")]
-            min_events = [(item["timestamp"], item["temperature"]) for item in self.data if item["event"] in ("new_min", "equal_min")]
+            # Séparation explicite des types d’événements
+            new_max_events = [
+                (item["timestamp"], item["temperature"])
+                for item in self.data if item["event"] == "new_max"
+            ]
+            new_min_events = [
+                (item["timestamp"], item["temperature"])
+                for item in self.data if item["event"] == "new_min"
+            ]
+            equal_max_events = [
+                (item["timestamp"], item["temperature"])
+                for item in self.data if item["event"] == "equal_max"
+            ]
+            equal_min_events = [
+                (item["timestamp"], item["temperature"])
+                for item in self.data if item["event"] == "equal_min"
+            ]
 
             self.temp_line.set_data(timestamps, temps)
             self.avg_line.set_data(timestamps, averages)
             self.hum_line.set_data(timestamps, hums)
-            self.set_scatter_points(self.max_point, max_events[-1:])
-            self.set_scatter_points(self.min_point, min_events[-1:])
-            self.set_scatter_points(self.old_max_points, max_events[:-1])
-            self.set_scatter_points(self.old_min_points, min_events[:-1])
+
+            # Dernier record “nouveau”
+            self.set_scatter_points(self.max_point, new_max_events[-1:])
+            self.set_scatter_points(self.min_point, new_min_events[-1:])
+
+            # Anciens records “nouveaux”
+            self.set_scatter_points(self.old_max_points, new_max_events[:-1])
+            self.set_scatter_points(self.old_min_points, new_min_events[:-1])
+
+            # Records égalés (=)
+            self.set_scatter_points(self.equal_max_point, equal_max_events)
+            self.set_scatter_points(self.equal_min_point, equal_min_events)
 
             self.ax_temp.relim()
             self.ax_temp.autoscale_view()
@@ -395,7 +443,10 @@ class WeatherStation:
             return
         with self.csv_path.open("w", newline="", encoding="utf-8-sig") as file:
             writer = csv.writer(file, delimiter=";")
-            writer.writerow(["Date", "Heure", "Temperature_C", "Humidite_pourcent", "Moyenne_temperature_C", "Evenement"])
+            writer.writerow([
+                "Date", "Heure", "Temperature_C", "Humidite_pourcent",
+                "Moyenne_temperature_C", "Evenement"
+            ])
             temps = []
             for item in self.data:
                 temps.append(item["temperature"])
